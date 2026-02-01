@@ -1009,11 +1009,15 @@ function parseAction(text) {
 }
 
 function interpretAction(text) {
+  const ruleAction = parseAction(text);
+  if (ruleAction) {
+    return ruleAction;
+  }
   const ml = classifyAdviceAction(text);
-  if (ml.action && ml.confidence >= 0.35) {
+  if (ml.action && ml.confidence >= 0.6) {
     return ml.action;
   }
-  return parseAction(text);
+  return null;
 }
 
 function describeAction(action) {
@@ -1079,12 +1083,6 @@ function parseAdvice(message) {
     || lower.includes("nevermind")
   ) {
     return { kind: "clear" };
-  }
-  if (/\blist\b/.test(lower)) {
-    return { kind: "list" };
-  }
-  if (lower.includes("remove last") || lower.includes("undo")) {
-    return { kind: "removeLast" };
   }
 
   const { actionText, conditionText } = splitAdviceText(lower);
@@ -1173,20 +1171,6 @@ chatForm.addEventListener("submit", (event) => {
   if (result.kind === "clear") {
     adviceRules = [];
     addChatLine("Ape", "Advice cleared. I will keep learning.");
-  } else if (result.kind === "list") {
-    if (!adviceRules.length) {
-      addChatLine("Ape", "No advice rules yet.");
-    } else {
-      const list = adviceRules.map((rule, idx) => `${idx + 1}. ${rule.text}`).join(" | ");
-      addChatLine("Ape", `Advice rules: ${list}`);
-    }
-  } else if (result.kind === "removeLast") {
-    const removed = adviceRules.pop();
-    if (removed) {
-      addChatLine("Ape", `Removed: ${removed.text}`);
-    } else {
-      addChatLine("Ape", "There are no rules to remove.");
-    }
   } else if (result.kind === "add") {
     adviceRules.push(result.rule);
     addChatLine("Ape", `Rule saved: ${result.rule.text}. I will keep it even if I lose a life.`);
