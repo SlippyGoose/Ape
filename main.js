@@ -54,6 +54,13 @@ const ADVICE_INTENTS = [
       "flee danger",
       "keep distance from predators",
       "hide from predators",
+      "keep safe from predators",
+      "stay safe",
+      "avoid danger",
+      "run away",
+      "escape predators",
+      "stop predators",
+      "stop the predators",
     ],
   },
   {
@@ -65,6 +72,12 @@ const ADVICE_INTENTS = [
       "look for food",
       "search for fruit",
       "forage for food",
+      "find something to eat",
+      "eat something",
+      "grab food",
+      "get some fruit",
+      "look for berries",
+      "feed yourself",
     ],
   },
   {
@@ -74,6 +87,9 @@ const ADVICE_INTENTS = [
       "go to trees",
       "hide in trees",
       "stick with trees",
+      "go to the forest",
+      "stay in the forest",
+      "stick to the trees",
     ],
   },
   {
@@ -83,6 +99,9 @@ const ADVICE_INTENTS = [
       "stay away from rocks",
       "do not hit rocks",
       "rocks are dangerous",
+      "avoid stones",
+      "keep away from boulders",
+      "do not touch rocks",
     ],
   },
   {
@@ -93,57 +112,26 @@ const ADVICE_INTENTS = [
       "hold position",
       "do not move",
       "pause here",
+      "stay still",
+      "hold still",
+      "freeze",
     ],
   },
   {
     id: "direction_up",
-    samples: ["go north", "head north", "move up", "north"],
+    samples: ["go north", "head north", "move up", "north", "northward", "go up"],
   },
   {
     id: "direction_down",
-    samples: ["go south", "head south", "move down", "south"],
+    samples: ["go south", "head south", "move down", "south", "southward", "go down"],
   },
   {
     id: "direction_left",
-    samples: ["go west", "head west", "move left", "west"],
+    samples: ["go west", "head west", "move left", "west", "go left"],
   },
   {
     id: "direction_right",
-    samples: ["go east", "head east", "move right", "east"],
-  },
-  {
-    id: "control_clear",
-    samples: [
-      "stop",
-      "stop it",
-      "clear advice",
-      "forget advice",
-      "cancel advice",
-      "dont listen",
-      "never mind",
-      "nevermind",
-    ],
-  },
-  {
-    id: "control_list",
-    samples: [
-      "list advice",
-      "show advice",
-      "show rules",
-      "what rules",
-      "what did i say",
-      "show my advice",
-    ],
-  },
-  {
-    id: "control_remove",
-    samples: [
-      "remove last",
-      "undo last",
-      "delete last rule",
-      "remove last advice",
-      "undo advice",
-    ],
+    samples: ["go east", "head east", "move right", "east", "go right"],
   },
 ];
 
@@ -249,7 +237,7 @@ function softmax(logits) {
   return exps.map((val) => val / sum);
 }
 
-function tokenizeWords(text) {
+function tokenize(text) {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s%]/g, " ")
@@ -257,30 +245,9 @@ function tokenizeWords(text) {
     .filter(Boolean);
 }
 
-function buildCharTrigrams(words) {
-  const grams = [];
-  words.forEach((word) => {
-    const padded = `^${word}$`;
-    if (padded.length < 3) {
-      grams.push(`tri:${padded}`);
-      return;
-    }
-    for (let i = 0; i <= padded.length - 3; i += 1) {
-      grams.push(`tri:${padded.slice(i, i + 3)}`);
-    }
-  });
-  return grams;
-}
-
-function buildTextFeatures(text) {
-  const words = tokenizeWords(text);
-  const grams = buildCharTrigrams(words);
-  return words.concat(grams);
-}
-
 function vectorizeText(text, vocabIndex, vocabSize) {
   const vector = Array(vocabSize).fill(0);
-  const tokens = buildTextFeatures(text);
+  const tokens = tokenize(text);
   tokens.forEach((token) => {
     const idx = vocabIndex[token];
     if (idx !== undefined) {
@@ -330,7 +297,7 @@ function buildAdviceModel() {
   ADVICE_INTENTS.forEach((intent, idx) => {
     intent.samples.forEach((sample) => {
       dataset.push({ text: sample, label: idx });
-      buildTextFeatures(sample).forEach((token) => vocab.add(token));
+      tokenize(sample).forEach((token) => vocab.add(token));
     });
   });
   const vocabList = Array.from(vocab);
@@ -349,13 +316,13 @@ function buildAdviceModel() {
   };
 }
 
-function classifyAdviceIntent(text) {
+function classifyAdviceAction(text) {
   if (!adviceModel) {
-    return { intentId: null, confidence: 0 };
+    return { action: null, confidence: 0 };
   }
   const inputs = vectorizeText(text, adviceModel.vocabIndex, adviceModel.vocabSize);
   if (inputs.every((val) => val === 0)) {
-    return { intentId: null, confidence: 0 };
+    return { action: null, confidence: 0 };
   }
   const { q } = forwardNetwork(adviceModel.net, inputs);
   const probs = softmax(q);
@@ -368,7 +335,7 @@ function classifyAdviceIntent(text) {
     }
   }
   const intentId = adviceModel.intents[bestIdx];
-  return { intentId, confidence: bestScore };
+  return { action: intentToAction(intentId), confidence: bestScore };
 }
 
 function intentToAction(intentId) {
@@ -986,43 +953,65 @@ function parseAction(text) {
   if (!text) {
     return null;
   }
-  if (text.includes("avoid") && text.includes("predator")) {
+  const hasPredator = text.includes("predator");
+  const hasAvoid =
+    text.includes("avoid")
+    || text.includes("stay away")
+    || text.includes("keep away")
+    || text.includes("dont")
+    || text.includes("don't")
+    || text.includes("do not");
+  const hasFlee = text.includes("flee") || text.includes("run") || text.includes("escape") || text.includes("hide");
+  if (hasPredator && (hasAvoid || hasFlee)) {
     return { type: "avoidPredator" };
   }
-  if (text.includes("avoid") && text.includes("rock")) {
+  const hasRock = text.includes("rock") || text.includes("rocks") || text.includes("stone") || text.includes("boulder");
+  const hasNo =
+    text.includes("avoid")
+    || text.includes("stay away")
+    || text.includes("keep away")
+    || text.includes("dont")
+    || text.includes("don't")
+    || text.includes("do not");
+  if (hasRock && hasNo) {
     return { type: "avoidRocks" };
   }
-  if (text.includes("food") || text.includes("eat")) {
+  if (text.includes("food") || text.includes("eat") || text.includes("forage") || text.includes("berries") || text.includes("fruit")) {
     return { type: "seekFood" };
   }
-  if (text.includes("tree")) {
+  if (text.includes("tree") || text.includes("forest")) {
     return { type: "seekTrees" };
   }
-  if (text.includes("stay") || text.includes("wait")) {
+  if (
+    text.includes("stay")
+    || text.includes("wait")
+    || text.includes("hold")
+    || text.includes("freeze")
+    || text.includes("still")
+    || text.includes("dont move")
+    || text.includes("don't move")
+  ) {
     return { type: "stay" };
   }
-  if (text.includes("north")) {
+  if (text.includes("north") || text.includes("up")) {
     return { type: "direction", dir: "up" };
   }
-  if (text.includes("south")) {
+  if (text.includes("south") || text.includes("down")) {
     return { type: "direction", dir: "down" };
   }
-  if (text.includes("west")) {
+  if (text.includes("west") || text.includes("left")) {
     return { type: "direction", dir: "left" };
   }
-  if (text.includes("east")) {
+  if (text.includes("east") || text.includes("right")) {
     return { type: "direction", dir: "right" };
   }
   return null;
 }
 
 function interpretAction(text) {
-  const ml = classifyAdviceIntent(text);
-  if (ml.intentId && ml.intentId.startsWith("control_")) {
-    return null;
-  }
-  if (ml.intentId && ml.confidence >= 0.4) {
-    return intentToAction(ml.intentId);
+  const ml = classifyAdviceAction(text);
+  if (ml.action && ml.confidence >= 0.35) {
+    return ml.action;
   }
   return parseAction(text);
 }
@@ -1077,23 +1066,17 @@ function getActiveAdviceRules() {
 
 function parseAdvice(message) {
   const lower = message.toLowerCase();
-  const mlIntent = classifyAdviceIntent(lower);
-  if (mlIntent.intentId && mlIntent.confidence >= 0.45) {
-    if (mlIntent.intentId === "control_clear") {
-      return { kind: "clear" };
-    }
-    if (mlIntent.intentId === "control_list") {
-      return { kind: "list" };
-    }
-    if (mlIntent.intentId === "control_remove") {
-      return { kind: "removeLast" };
-    }
-  }
   if (
     lower.includes("clear")
     || lower.includes("forget")
+    || lower.trim() === "stop"
+    || lower.trim() === "stop it"
+    || lower.trim() === "stop now"
     || lower.includes("stop advice")
     || lower.includes("stop listening")
+    || lower.includes("cancel")
+    || lower.includes("never mind")
+    || lower.includes("nevermind")
   ) {
     return { kind: "clear" };
   }
