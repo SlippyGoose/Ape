@@ -111,6 +111,40 @@ const ADVICE_INTENTS = [
     id: "direction_right",
     samples: ["go east", "head east", "move right", "east"],
   },
+  {
+    id: "control_clear",
+    samples: [
+      "stop",
+      "stop it",
+      "clear advice",
+      "forget advice",
+      "cancel advice",
+      "dont listen",
+      "never mind",
+      "nevermind",
+    ],
+  },
+  {
+    id: "control_list",
+    samples: [
+      "list advice",
+      "show advice",
+      "show rules",
+      "what rules",
+      "what did i say",
+      "show my advice",
+    ],
+  },
+  {
+    id: "control_remove",
+    samples: [
+      "remove last",
+      "undo last",
+      "delete last rule",
+      "remove last advice",
+      "undo advice",
+    ],
+  },
 ];
 
 let terrainCanvas;
@@ -215,7 +249,7 @@ function softmax(logits) {
   return exps.map((val) => val / sum);
 }
 
-function tokenize(text) {
+function tokenizeWords(text) {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s%]/g, " ")
@@ -223,9 +257,30 @@ function tokenize(text) {
     .filter(Boolean);
 }
 
+function buildCharTrigrams(words) {
+  const grams = [];
+  words.forEach((word) => {
+    const padded = `^${word}$`;
+    if (padded.length < 3) {
+      grams.push(`tri:${padded}`);
+      return;
+    }
+    for (let i = 0; i <= padded.length - 3; i += 1) {
+      grams.push(`tri:${padded.slice(i, i + 3)}`);
+    }
+  });
+  return grams;
+}
+
+function buildTextFeatures(text) {
+  const words = tokenizeWords(text);
+  const grams = buildCharTrigrams(words);
+  return words.concat(grams);
+}
+
 function vectorizeText(text, vocabIndex, vocabSize) {
   const vector = Array(vocabSize).fill(0);
-  const tokens = tokenize(text);
+  const tokens = buildTextFeatures(text);
   tokens.forEach((token) => {
     const idx = vocabIndex[token];
     if (idx !== undefined) {
@@ -275,7 +330,7 @@ function buildAdviceModel() {
   ADVICE_INTENTS.forEach((intent, idx) => {
     intent.samples.forEach((sample) => {
       dataset.push({ text: sample, label: idx });
-      tokenize(sample).forEach((token) => vocab.add(token));
+      buildTextFeatures(sample).forEach((token) => vocab.add(token));
     });
   });
   const vocabList = Array.from(vocab);
@@ -294,13 +349,13 @@ function buildAdviceModel() {
   };
 }
 
-function classifyAdviceAction(text) {
+function classifyAdviceIntent(text) {
   if (!adviceModel) {
-    return { action: null, confidence: 0 };
+    return { intentId: null, confidence: 0 };
   }
   const inputs = vectorizeText(text, adviceModel.vocabIndex, adviceModel.vocabSize);
   if (inputs.every((val) => val === 0)) {
-    return { action: null, confidence: 0 };
+    return { intentId: null, confidence: 0 };
   }
   const { q } = forwardNetwork(adviceModel.net, inputs);
   const probs = softmax(q);
@@ -313,7 +368,7 @@ function classifyAdviceAction(text) {
     }
   }
   const intentId = adviceModel.intents[bestIdx];
-  return { action: intentToAction(intentId), confidence: bestScore };
+  return { intentId, confidence: bestScore };
 }
 
 function intentToAction(intentId) {
@@ -962,9 +1017,12 @@ function parseAction(text) {
 }
 
 function interpretAction(text) {
-  const ml = classifyAdviceAction(text);
-  if (ml.action && ml.confidence >= 0.4) {
-    return ml.action;
+  const ml = classifyAdviceIntent(text);
+  if (ml.intentId && ml.intentId.startsWith("control_")) {
+    return null;
+  }
+  if (ml.intentId && ml.confidence >= 0.4) {
+    return intentToAction(ml.intentId);
   }
   return parseAction(text);
 }
@@ -1019,6 +1077,18 @@ function getActiveAdviceRules() {
 
 function parseAdvice(message) {
   const lower = message.toLowerCase();
+  const mlIntent = classifyAdviceIntent(lower);
+  if (mlIntent.intentId && mlIntent.confidence >= 0.45) {
+    if (mlIntent.intentId === "control_clear") {
+      return { kind: "clear" };
+    }
+    if (mlIntent.intentId === "control_list") {
+      return { kind: "list" };
+    }
+    if (mlIntent.intentId === "control_remove") {
+      return { kind: "removeLast" };
+    }
+  }
   if (
     lower.includes("clear")
     || lower.includes("forget")
