@@ -45,7 +45,8 @@ let rocks = new Set();
 let food = [];
 let predators = [];
 let ape;
-let advice = { type: "none", dir: null, ticks: 0, text: "" };
+let adviceRules = [];
+let adviceId = 1;
 let tick = 0;
 
 function randInt(max) {
@@ -197,7 +198,8 @@ function resetWorld() {
   seedFood();
   spawnPredators();
   ape = createApe();
-  advice = { type: "none", dir: null, ticks: 0, text: "" };
+  adviceRules = [];
+  adviceId = 1;
   tick = 0;
   addChatLine("Ape", "New island generated. I will keep learning.");
 }
@@ -283,69 +285,108 @@ function chooseAction(state) {
 }
 
 function buildAdviceBias() {
-  if (advice.ticks <= 0) {
+  if (!adviceRules.length) {
+    return null;
+  }
+  const activeRules = adviceRules.filter((rule) => evaluateCondition(rule.condition));
+  if (!activeRules.length) {
     return null;
   }
   const bias = Array(ACTIONS.length).fill(0);
-  const weight = 0.6;
+  const weight = 0.6 / activeRules.length;
+  activeRules.forEach((rule) => {
+    const partial = actionBias(rule.action, weight);
+    if (!partial) {
+      return;
+    }
+    for (let i = 0; i < bias.length; i += 1) {
+      bias[i] += partial[i];
+    }
+  });
+  return bias;
+}
 
-  if (advice.type === "avoidPredator") {
+function actionBias(action, weight) {
+  const bias = Array(ACTIONS.length).fill(0);
+  if (!action) {
+    return null;
+  }
+  if (action.type === "avoidPredator") {
     const nearest = getNearest(predators);
     if (!nearest) {
       return null;
     }
-    ACTIONS.forEach((action, idx) => {
-      const nx = ape.x + action.dx;
-      const ny = ape.y + action.dy;
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (d - nearest.distance) * weight * 0.5;
     });
-  } else if (advice.type === "seekFood") {
+  } else if (action.type === "seekFood") {
     const nearest = getNearest(food);
     if (!nearest) {
       return null;
     }
-    ACTIONS.forEach((action, idx) => {
-      const nx = ape.x + action.dx;
-      const ny = ape.y + action.dy;
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (nearest.distance - d) * weight * 0.5;
     });
-  } else if (advice.type === "direction") {
-    ACTIONS.forEach((action, idx) => {
-      if (action.name === advice.dir) {
+  } else if (action.type === "direction") {
+    ACTIONS.forEach((move, idx) => {
+      if (move.name === action.dir) {
         bias[idx] = weight * 1.2;
-      } else if (action.name !== "stay") {
+      } else if (move.name !== "stay") {
         bias[idx] = -weight * 0.4;
       }
     });
-  } else if (advice.type === "seekTrees") {
+  } else if (action.type === "seekTrees") {
     const nearest = getNearestSet(trees);
     if (!nearest) {
       return null;
     }
-    ACTIONS.forEach((action, idx) => {
-      const nx = ape.x + action.dx;
-      const ny = ape.y + action.dy;
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (nearest.distance - d) * weight * 0.35;
     });
-  } else if (advice.type === "avoidRocks") {
+  } else if (action.type === "avoidRocks") {
     const nearest = getNearestSet(rocks);
     if (!nearest) {
       return null;
     }
-    ACTIONS.forEach((action, idx) => {
-      const nx = ape.x + action.dx;
-      const ny = ape.y + action.dy;
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (d - nearest.distance) * weight * 0.4;
     });
-  } else if (advice.type === "stay") {
+  } else if (action.type === "stay") {
     bias[0] = weight * 1.2;
   }
 
   return bias;
+}
+
+function evaluateCondition(condition) {
+  if (!condition || condition.type === "always") {
+    return true;
+  }
+  if (condition.type === "hunger") {
+    if (condition.op === ">") {
+      return ape.hunger > condition.value;
+    }
+    return ape.hunger < condition.value;
+  }
+  if (condition.type === "predatorNear") {
+    return getNearest(predators)?.distance <= 3;
+  }
+  if (condition.type === "foodNear") {
+    return getNearest(food)?.distance <= 4;
+  }
+  return true;
 }
 
 function updatePredators() {
@@ -423,9 +464,6 @@ function updateQ(reward, newState) {
 
 function update() {
   tick += 1;
-  if (advice.ticks > 0) {
-    advice.ticks -= 1;
-  }
 
   ape.hunger = clamp(ape.hunger - 0.8, 0, 100);
   ape.age += 1;
@@ -524,12 +562,16 @@ function drawHud() {
 
   const predatorDist = getNearest(predators)?.distance ?? "?";
   const foodDist = getNearest(food)?.distance ?? "?";
+  const activeRules = getActiveAdviceRules();
+  const allAdviceText = adviceRules.length ? adviceRules.map((rule) => rule.text).join(" | ") : "none";
+  const activeAdviceText = activeRules.length ? activeRules.map((rule) => rule.text).join(" | ") : "none";
 
   readoutEl.innerHTML = `
     <div><strong>AI State:</strong> ${stateLabel()}</div>
     <div><strong>Nearest Predator:</strong> ${predatorDist} tiles</div>
     <div><strong>Nearest Food:</strong> ${foodDist} tiles</div>
-    <div><strong>Advice:</strong> ${advice.ticks > 0 ? advice.text : "none"}</div>
+    <div><strong>Advice Rules:</strong> ${allAdviceText}</div>
+    <div><strong>Active Now:</strong> ${activeAdviceText}</div>
   `;
 }
 
@@ -552,39 +594,167 @@ function addChatLine(speaker, message) {
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
+function splitAdviceText(text) {
+  const match = text.match(/\b(when|if)\b/);
+  if (!match || match.index === undefined) {
+    return { actionText: text.trim(), conditionText: "" };
+  }
+  const idx = match.index;
+  const actionText = text.slice(0, idx).trim();
+  const conditionText = text.slice(idx).replace(/^(when|if)\s*/, "").trim();
+  return { actionText, conditionText };
+}
+
+function parseCondition(text) {
+  const source = text.trim();
+  if (!source) {
+    return { type: "always" };
+  }
+  if (source.includes("always")) {
+    return { type: "always" };
+  }
+  const hungerMatch = source.match(
+    /hunger[^0-9]*(<=|>=|<|>|below|under|less than|over|above|greater than)?\s*(\d{1,3})\s*%?/
+  );
+  if (hungerMatch) {
+    const rawOp = hungerMatch[1] ?? "below";
+    const value = clamp(Number(hungerMatch[2]), 0, 100);
+    const op = rawOp === ">" || rawOp === ">=" || rawOp === "over" || rawOp === "above" || rawOp === "greater than" ? ">" : "<";
+    return { type: "hunger", op, value };
+  }
+  if (source.includes("hungry")) {
+    return { type: "hunger", op: "<", value: 40 };
+  }
+  if (source.includes("predator") && (source.includes("near") || source.includes("close"))) {
+    return { type: "predatorNear" };
+  }
+  if (source.includes("food") && (source.includes("near") || source.includes("close"))) {
+    return { type: "foodNear" };
+  }
+  return { type: "always" };
+}
+
+function parseAction(text) {
+  if (!text) {
+    return null;
+  }
+  if (text.includes("avoid") && text.includes("predator")) {
+    return { type: "avoidPredator" };
+  }
+  if (text.includes("avoid") && text.includes("rock")) {
+    return { type: "avoidRocks" };
+  }
+  if (text.includes("food") || text.includes("eat")) {
+    return { type: "seekFood" };
+  }
+  if (text.includes("tree")) {
+    return { type: "seekTrees" };
+  }
+  if (text.includes("stay") || text.includes("wait")) {
+    return { type: "stay" };
+  }
+  if (text.includes("north")) {
+    return { type: "direction", dir: "up" };
+  }
+  if (text.includes("south")) {
+    return { type: "direction", dir: "down" };
+  }
+  if (text.includes("west")) {
+    return { type: "direction", dir: "left" };
+  }
+  if (text.includes("east")) {
+    return { type: "direction", dir: "right" };
+  }
+  return null;
+}
+
+function describeAction(action) {
+  if (!action) {
+    return "do nothing";
+  }
+  if (action.type === "avoidPredator") return "avoid predators";
+  if (action.type === "avoidRocks") return "avoid rocks";
+  if (action.type === "seekFood") return "seek food";
+  if (action.type === "seekTrees") return "stay near trees";
+  if (action.type === "stay") return "stay put";
+  if (action.type === "direction") {
+    if (action.dir === "up") return "go north";
+    if (action.dir === "down") return "go south";
+    if (action.dir === "left") return "go west";
+    if (action.dir === "right") return "go east";
+  }
+  return "do nothing";
+}
+
+function describeCondition(condition) {
+  if (!condition || condition.type === "always") {
+    return "";
+  }
+  if (condition.type === "hunger") {
+    const op = condition.op === ">" ? ">" : "<";
+    return `hunger ${op} ${condition.value}%`;
+  }
+  if (condition.type === "predatorNear") {
+    return "predators nearby";
+  }
+  if (condition.type === "foodNear") {
+    return "food nearby";
+  }
+  return "";
+}
+
+function formatRuleText(action, condition) {
+  const actionText = describeAction(action);
+  const conditionText = describeCondition(condition);
+  if (!conditionText) {
+    return actionText;
+  }
+  return `${actionText} when ${conditionText}`;
+}
+
+function getActiveAdviceRules() {
+  return adviceRules.filter((rule) => evaluateCondition(rule.condition));
+}
+
 function parseAdvice(message) {
   const lower = message.toLowerCase();
-  if (lower.includes("clear") || lower.includes("stop")) {
-    return { type: "none", ticks: 0, text: "Advice cleared" };
+  if (
+    lower.includes("clear")
+    || lower.includes("forget")
+    || lower.includes("stop advice")
+    || lower.includes("stop listening")
+  ) {
+    return { kind: "clear" };
   }
-  if (lower.includes("avoid") && lower.includes("predator")) {
-    return { type: "avoidPredator", ticks: 600, text: "Avoid predators" };
+  if (/\blist\b/.test(lower)) {
+    return { kind: "list" };
   }
-  if (lower.includes("food") || lower.includes("eat")) {
-    return { type: "seekFood", ticks: 600, text: "Seek food" };
+  if (lower.includes("remove last") || lower.includes("undo")) {
+    return { kind: "removeLast" };
   }
-  if (lower.includes("tree")) {
-    return { type: "seekTrees", ticks: 500, text: "Stay near trees" };
+
+  const { actionText, conditionText } = splitAdviceText(lower);
+  const action = parseAction(actionText || lower);
+  if (!action) {
+    return { kind: "unknown" };
   }
-  if (lower.includes("avoid") && lower.includes("rock")) {
-    return { type: "avoidRocks", ticks: 500, text: "Avoid rocks" };
+  let condition = parseCondition(conditionText);
+  if (condition.type === "always" && !conditionText) {
+    const fallback = parseCondition(lower);
+    if (fallback.type !== "always") {
+      condition = fallback;
+    }
   }
-  if (lower.includes("stay") || lower.includes("wait")) {
-    return { type: "stay", ticks: 300, text: "Stay put" };
-  }
-  if (lower.includes("north")) {
-    return { type: "direction", dir: "up", ticks: 400, text: "Head north" };
-  }
-  if (lower.includes("south")) {
-    return { type: "direction", dir: "down", ticks: 400, text: "Head south" };
-  }
-  if (lower.includes("west")) {
-    return { type: "direction", dir: "left", ticks: 400, text: "Head west" };
-  }
-  if (lower.includes("east")) {
-    return { type: "direction", dir: "right", ticks: 400, text: "Head east" };
-  }
-  return { type: "none", ticks: 0, text: "I will remember your encouragement" };
+  const text = formatRuleText(action, condition);
+  return {
+    kind: "add",
+    rule: {
+      id: adviceId++,
+      action,
+      condition,
+      text,
+    },
+  };
 }
 
 function saveState() {
@@ -645,12 +815,29 @@ chatForm.addEventListener("submit", (event) => {
     return;
   }
   addChatLine("You", text);
-  const nextAdvice = parseAdvice(text);
-  advice = { ...nextAdvice };
-  if (advice.ticks > 0) {
-    addChatLine("Ape", `Guidance received: ${advice.text}.`);
+  const result = parseAdvice(text);
+  if (result.kind === "clear") {
+    adviceRules = [];
+    addChatLine("Ape", "Advice cleared. I will keep learning.");
+  } else if (result.kind === "list") {
+    if (!adviceRules.length) {
+      addChatLine("Ape", "No advice rules yet.");
+    } else {
+      const list = adviceRules.map((rule, idx) => `${idx + 1}. ${rule.text}`).join(" | ");
+      addChatLine("Ape", `Advice rules: ${list}`);
+    }
+  } else if (result.kind === "removeLast") {
+    const removed = adviceRules.pop();
+    if (removed) {
+      addChatLine("Ape", `Removed: ${removed.text}`);
+    } else {
+      addChatLine("Ape", "There are no rules to remove.");
+    }
+  } else if (result.kind === "add") {
+    adviceRules.push(result.rule);
+    addChatLine("Ape", `Rule saved: ${result.rule.text}. I will keep it even if I lose a life.`);
   } else {
-    addChatLine("Ape", advice.text);
+    addChatLine("Ape", "I did not understand. Try: \"get food when hunger is below 50%\".");
   }
   chatInput.value = "";
 });
