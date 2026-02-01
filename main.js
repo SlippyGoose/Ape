@@ -64,6 +64,17 @@ const ADVICE_INTENTS = [
     ],
   },
   {
+    id: "seekPredator",
+    samples: [
+      "go towards predators",
+      "approach predators",
+      "move to predators",
+      "head to predators",
+      "chase predators",
+      "follow predators",
+    ],
+  },
+  {
     id: "seekFood",
     samples: [
       "find food",
@@ -645,6 +656,17 @@ function actionBias(action, weight) {
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (d - nearest.distance) * weight * 0.5;
     });
+  } else if (action.type === "seekPredator") {
+    const nearest = getNearest(predators);
+    if (!nearest) {
+      return null;
+    }
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
+      const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
+      bias[idx] = (nearest.distance - d) * weight * 0.4;
+    });
   } else if (action.type === "seekFood") {
     const nearest = getNearest(food);
     if (!nearest) {
@@ -965,6 +987,18 @@ function parseAction(text) {
   if (hasPredator && (hasAvoid || hasFlee)) {
     return { type: "avoidPredator" };
   }
+  const hasToward =
+    text.includes("toward")
+    || text.includes("towards")
+    || text.includes("approach")
+    || text.includes("head to")
+    || text.includes("go to")
+    || text.includes("move to")
+    || text.includes("chase")
+    || text.includes("follow");
+  if (hasPredator && hasToward) {
+    return { type: "seekPredator" };
+  }
   const hasRock = text.includes("rock") || text.includes("rocks") || text.includes("stone") || text.includes("boulder");
   const hasNo =
     text.includes("avoid")
@@ -990,6 +1024,7 @@ function parseAction(text) {
     || text.includes("still")
     || text.includes("dont move")
     || text.includes("don't move")
+    || text.includes("stop moving")
   ) {
     return { type: "stay" };
   }
@@ -1025,6 +1060,7 @@ function describeAction(action) {
     return "do nothing";
   }
   if (action.type === "avoidPredator") return "avoid predators";
+  if (action.type === "seekPredator") return "approach predators";
   if (action.type === "avoidRocks") return "avoid rocks";
   if (action.type === "seekFood") return "seek food";
   if (action.type === "seekTrees") return "stay near trees";
@@ -1065,7 +1101,13 @@ function formatRuleText(action, condition) {
 }
 
 function getActiveAdviceRules() {
-  return adviceRules.filter((rule) => evaluateCondition(rule.condition));
+  for (let i = adviceRules.length - 1; i >= 0; i -= 1) {
+    const rule = adviceRules[i];
+    if (evaluateCondition(rule.condition)) {
+      return [rule];
+    }
+  }
+  return [];
 }
 
 function parseAdvice(message) {
