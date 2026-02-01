@@ -38,6 +38,81 @@ const ACTIONS = [
   { name: "right", dx: 1, dy: 0 },
 ];
 
+const NET_INPUTS = 5;
+const NET_HIDDEN = 16;
+const NET_OUTPUTS = ACTIONS.length;
+const NET_LR = 0.05;
+const NET_GAMMA = 0.9;
+
+const ADVICE_INTENTS = [
+  {
+    id: "avoidPredator",
+    samples: [
+      "avoid predators",
+      "stay away from predators",
+      "run from predators",
+      "flee danger",
+      "keep distance from predators",
+      "hide from predators",
+    ],
+  },
+  {
+    id: "seekFood",
+    samples: [
+      "find food",
+      "get food",
+      "eat now",
+      "look for food",
+      "search for fruit",
+      "forage for food",
+    ],
+  },
+  {
+    id: "seekTrees",
+    samples: [
+      "stay near trees",
+      "go to trees",
+      "hide in trees",
+      "stick with trees",
+    ],
+  },
+  {
+    id: "avoidRocks",
+    samples: [
+      "avoid rocks",
+      "stay away from rocks",
+      "do not hit rocks",
+      "rocks are dangerous",
+    ],
+  },
+  {
+    id: "stay",
+    samples: [
+      "stay",
+      "wait",
+      "hold position",
+      "do not move",
+      "pause here",
+    ],
+  },
+  {
+    id: "direction_up",
+    samples: ["go north", "head north", "move up", "north"],
+  },
+  {
+    id: "direction_down",
+    samples: ["go south", "head south", "move down", "south"],
+  },
+  {
+    id: "direction_left",
+    samples: ["go west", "head west", "move left", "west"],
+  },
+  {
+    id: "direction_right",
+    samples: ["go east", "head east", "move right", "east"],
+  },
+];
+
 let terrainCanvas;
 let landMask;
 let trees = new Set();
@@ -48,6 +123,7 @@ let ape;
 let adviceRules = [];
 let adviceId = 1;
 let tick = 0;
+let adviceModel;
 
 function randInt(max) {
   return Math.floor(Math.random() * max);
@@ -65,6 +141,198 @@ function dist(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.abs(dx) + Math.abs(dy);
+}
+
+function initNetwork(inputSize, hiddenSize, outputSize) {
+  const scale = 0.4;
+  const W1 = Array.from({ length: hiddenSize }, () =>
+    Array.from({ length: inputSize }, () => (Math.random() * 2 - 1) * scale)
+  );
+  const b1 = Array(hiddenSize).fill(0);
+  const W2 = Array.from({ length: outputSize }, () =>
+    Array.from({ length: hiddenSize }, () => (Math.random() * 2 - 1) * scale)
+  );
+  const b2 = Array(outputSize).fill(0);
+  return {
+    inputSize,
+    hiddenSize,
+    outputSize,
+    W1,
+    b1,
+    W2,
+    b2,
+  };
+}
+
+function forwardNetwork(net, inputs) {
+  const z1 = net.W1.map((row, i) => {
+    let sum = net.b1[i];
+    for (let j = 0; j < row.length; j += 1) {
+      sum += row[j] * inputs[j];
+    }
+    return sum;
+  });
+  const h = z1.map((val) => (val > 0 ? val : 0));
+  const q = net.W2.map((row, i) => {
+    let sum = net.b2[i];
+    for (let j = 0; j < row.length; j += 1) {
+      sum += row[j] * h[j];
+    }
+    return sum;
+  });
+  return { z1, h, q };
+}
+
+function predictQ(net, inputs) {
+  return forwardNetwork(net, inputs).q;
+}
+
+function trainNetwork(net, inputs, actionIdx, target) {
+  const { z1, h, q } = forwardNetwork(net, inputs);
+  const error = target - q[actionIdx];
+
+  for (let i = 0; i < net.hiddenSize; i += 1) {
+    net.W2[actionIdx][i] += NET_LR * error * h[i];
+  }
+  net.b2[actionIdx] += NET_LR * error;
+
+  for (let i = 0; i < net.hiddenSize; i += 1) {
+    if (z1[i] <= 0) {
+      continue;
+    }
+    const delta = error * net.W2[actionIdx][i];
+    for (let j = 0; j < net.inputSize; j += 1) {
+      net.W1[i][j] += NET_LR * delta * inputs[j];
+    }
+    net.b1[i] += NET_LR * delta;
+  }
+}
+
+function softmax(logits) {
+  const max = Math.max(...logits);
+  const exps = logits.map((val) => Math.exp(val - max));
+  const sum = exps.reduce((acc, val) => acc + val, 0) || 1;
+  return exps.map((val) => val / sum);
+}
+
+function tokenize(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s%]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function vectorizeText(text, vocabIndex, vocabSize) {
+  const vector = Array(vocabSize).fill(0);
+  const tokens = tokenize(text);
+  tokens.forEach((token) => {
+    const idx = vocabIndex[token];
+    if (idx !== undefined) {
+      vector[idx] = 1;
+    }
+  });
+  return vector;
+}
+
+function trainTextNet(net, dataset, vocabIndex, vocabSize) {
+  const epochs = 220;
+  const lr = 0.15;
+  for (let epoch = 0; epoch < epochs; epoch += 1) {
+    dataset.forEach((sample) => {
+      const inputs = vectorizeText(sample.text, vocabIndex, vocabSize);
+      const { z1, h, q } = forwardNetwork(net, inputs);
+      const probs = softmax(q);
+      const deltas = probs.map((val, idx) => val - (idx === sample.label ? 1 : 0));
+
+      for (let i = 0; i < net.outputSize; i += 1) {
+        for (let j = 0; j < net.hiddenSize; j += 1) {
+          net.W2[i][j] -= lr * deltas[i] * h[j];
+        }
+        net.b2[i] -= lr * deltas[i];
+      }
+
+      for (let i = 0; i < net.hiddenSize; i += 1) {
+        if (z1[i] <= 0) {
+          continue;
+        }
+        let deltaHidden = 0;
+        for (let k = 0; k < net.outputSize; k += 1) {
+          deltaHidden += deltas[k] * net.W2[k][i];
+        }
+        for (let j = 0; j < net.inputSize; j += 1) {
+          net.W1[i][j] -= lr * deltaHidden * inputs[j];
+        }
+        net.b1[i] -= lr * deltaHidden;
+      }
+    });
+  }
+}
+
+function buildAdviceModel() {
+  const dataset = [];
+  const vocab = new Set();
+  ADVICE_INTENTS.forEach((intent, idx) => {
+    intent.samples.forEach((sample) => {
+      dataset.push({ text: sample, label: idx });
+      tokenize(sample).forEach((token) => vocab.add(token));
+    });
+  });
+  const vocabList = Array.from(vocab);
+  const vocabIndex = {};
+  vocabList.forEach((token, idx) => {
+    vocabIndex[token] = idx;
+  });
+  const vocabSize = vocabList.length;
+  const net = initNetwork(vocabSize, 12, ADVICE_INTENTS.length);
+  trainTextNet(net, dataset, vocabIndex, vocabSize);
+  return {
+    net,
+    vocabIndex,
+    vocabSize,
+    intents: ADVICE_INTENTS.map((intent) => intent.id),
+  };
+}
+
+function classifyAdviceAction(text) {
+  if (!adviceModel) {
+    return { action: null, confidence: 0 };
+  }
+  const inputs = vectorizeText(text, adviceModel.vocabIndex, adviceModel.vocabSize);
+  if (inputs.every((val) => val === 0)) {
+    return { action: null, confidence: 0 };
+  }
+  const { q } = forwardNetwork(adviceModel.net, inputs);
+  const probs = softmax(q);
+  let bestIdx = 0;
+  let bestScore = probs[0];
+  for (let i = 1; i < probs.length; i += 1) {
+    if (probs[i] > bestScore) {
+      bestScore = probs[i];
+      bestIdx = i;
+    }
+  }
+  const intentId = adviceModel.intents[bestIdx];
+  return { action: intentToAction(intentId), confidence: bestScore };
+}
+
+function intentToAction(intentId) {
+  if (!intentId) {
+    return null;
+  }
+  if (intentId === "direction_up") {
+    return { type: "direction", dir: "up" };
+  }
+  if (intentId === "direction_down") {
+    return { type: "direction", dir: "down" };
+  }
+  if (intentId === "direction_left") {
+    return { type: "direction", dir: "left" };
+  }
+  if (intentId === "direction_right") {
+    return { type: "direction", dir: "right" };
+  }
+  return { type: intentId };
 }
 
 function createLandMask() {
@@ -162,17 +430,33 @@ function spawnPredators() {
   }
 }
 
+function hydrateNet(saved) {
+  if (!saved || !saved.W1 || !saved.W2) {
+    return initNetwork(NET_INPUTS, NET_HIDDEN, NET_OUTPUTS);
+  }
+  if (
+    saved.W1.length !== NET_HIDDEN
+    || saved.W1[0]?.length !== NET_INPUTS
+    || saved.W2.length !== NET_OUTPUTS
+    || saved.W2[0]?.length !== NET_HIDDEN
+  ) {
+    return initNetwork(NET_INPUTS, NET_HIDDEN, NET_OUTPUTS);
+  }
+  return {
+    inputSize: NET_INPUTS,
+    hiddenSize: NET_HIDDEN,
+    outputSize: NET_OUTPUTS,
+    W1: saved.W1,
+    b1: saved.b1 ?? Array(NET_HIDDEN).fill(0),
+    W2: saved.W2,
+    b2: saved.b2 ?? Array(NET_OUTPUTS).fill(0),
+  };
+}
+
 function createApe() {
   const saved = loadSave();
   const apeStart = randomLandCell();
-  const qTable = Array.from({ length: 8 }, () => Array(ACTIONS.length).fill(0));
-  if (saved?.qTable) {
-    for (let s = 0; s < saved.qTable.length; s += 1) {
-      for (let a = 0; a < saved.qTable[s].length; a += 1) {
-        qTable[s][a] = saved.qTable[s][a];
-      }
-    }
-  }
+  const net = hydrateNet(saved?.net);
 
   return {
     x: apeStart.x,
@@ -182,8 +466,8 @@ function createApe() {
     deaths: saved?.deaths ?? 0,
     age: saved?.age ?? 0,
     epsilon: saved?.epsilon ?? 0.3,
-    qTable,
-    lastState: null,
+    net,
+    lastFeatures: null,
     lastAction: null,
   };
 }
@@ -237,6 +521,23 @@ function getNearestSet(set) {
   return { target: nearest, distance: best };
 }
 
+function buildStateFeatures() {
+  const predatorInfo = getNearest(predators);
+  const foodInfo = getNearest(food);
+  const predatorDist = predatorInfo ? predatorInfo.distance : 10;
+  const foodDist = foodInfo ? foodInfo.distance : 10;
+  const predatorNear = predatorInfo ? (predatorInfo.distance <= 3 ? 1 : 0) : 0;
+  const foodNear = foodInfo ? (foodInfo.distance <= 4 ? 1 : 0) : 0;
+
+  return [
+    ape.hunger / 100,
+    clamp(predatorDist / 10, 0, 1),
+    clamp(foodDist / 10, 0, 1),
+    predatorNear,
+    foodNear,
+  ];
+}
+
 function stateIndex() {
   const predatorNear = getNearest(predators)?.distance <= 3;
   const hungry = ape.hunger <= 40;
@@ -248,8 +549,8 @@ function stateIndex() {
   return idx;
 }
 
-function chooseAction(state) {
-  const qValues = ape.qTable[state];
+function chooseAction(features) {
+  const qValues = predictQ(ape.net, features);
   const valid = ACTIONS.map((action) => {
     const nx = ape.x + action.dx;
     const ny = ape.y + action.dy;
@@ -451,25 +752,14 @@ function respawn(reason) {
   addChatLine("Ape", `I lost a life to ${reason}, but I will keep learning.`);
 }
 
-function updateQ(reward, newState) {
-  const alpha = 0.1;
-  const gamma = 0.9;
-  if (ape.lastState === null || ape.lastAction === null) {
-    return;
-  }
-  const oldValue = ape.qTable[ape.lastState][ape.lastAction];
-  const nextBest = Math.max(...ape.qTable[newState]);
-  ape.qTable[ape.lastState][ape.lastAction] = oldValue + alpha * (reward + gamma * nextBest - oldValue);
-}
-
 function update() {
   tick += 1;
 
   ape.hunger = clamp(ape.hunger - 0.8, 0, 100);
   ape.age += 1;
 
-  const currentState = stateIndex();
-  const actionIdx = chooseAction(currentState);
+  const features = buildStateFeatures();
+  const actionIdx = chooseAction(features);
   applyAction(actionIdx);
 
   const ate = eatFood();
@@ -493,10 +783,12 @@ function update() {
     respawn("starvation");
   }
 
-  const newState = stateIndex();
-  updateQ(reward, newState);
+  const nextFeatures = buildStateFeatures();
+  const future = died ? 0 : Math.max(...predictQ(ape.net, nextFeatures));
+  const target = reward + NET_GAMMA * future;
+  trainNetwork(ape.net, features, actionIdx, target);
 
-  ape.lastState = currentState;
+  ape.lastFeatures = features;
   ape.lastAction = actionIdx;
 
   if (!died && tick % 6 === 0) {
@@ -567,6 +859,7 @@ function drawHud() {
   const activeAdviceText = activeRules.length ? activeRules.map((rule) => rule.text).join(" | ") : "none";
 
   readoutEl.innerHTML = `
+    <div><strong>Brain:</strong> Neural net policy</div>
     <div><strong>AI State:</strong> ${stateLabel()}</div>
     <div><strong>Nearest Predator:</strong> ${predatorDist} tiles</div>
     <div><strong>Nearest Food:</strong> ${foodDist} tiles</div>
@@ -668,6 +961,14 @@ function parseAction(text) {
   return null;
 }
 
+function interpretAction(text) {
+  const ml = classifyAdviceAction(text);
+  if (ml.action && ml.confidence >= 0.4) {
+    return ml.action;
+  }
+  return parseAction(text);
+}
+
 function describeAction(action) {
   if (!action) {
     return "do nothing";
@@ -734,7 +1035,7 @@ function parseAdvice(message) {
   }
 
   const { actionText, conditionText } = splitAdviceText(lower);
-  const action = parseAction(actionText || lower);
+  const action = interpretAction(actionText || lower);
   if (!action) {
     return { kind: "unknown" };
   }
@@ -759,8 +1060,8 @@ function parseAdvice(message) {
 
 function saveState() {
   const payload = {
-    version: 1,
-    qTable: ape.qTable,
+    version: 2,
+    net: ape.net,
     foods: ape.foods,
     deaths: ape.deaths,
     age: ape.age,
@@ -780,7 +1081,7 @@ function loadSave() {
       return null;
     }
     const parsed = JSON.parse(raw);
-    if (parsed.version !== 1) {
+    if (parsed.version !== 2) {
       return null;
     }
     return parsed;
@@ -847,5 +1148,6 @@ resetButton.addEventListener("click", () => {
   resetWorld();
 });
 
+adviceModel = buildAdviceModel();
 resetWorld();
 loop();

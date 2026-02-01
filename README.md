@@ -13,11 +13,6 @@ python -m http.server
 
 Then open `http://localhost:8000`.
 
-## Deploy with Vercel
-
-1. Push this folder to a GitHub repository.
-2. In Vercel, import the repo and deploy.
-3. Use the default settings (no build command, output directory `.`).
 
 ## Files
 
