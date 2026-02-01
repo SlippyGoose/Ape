@@ -75,6 +75,17 @@ const ADVICE_INTENTS = [
     ],
   },
   {
+    id: "avoidFood",
+    samples: [
+      "stop getting food",
+      "avoid food",
+      "do not eat",
+      "dont eat",
+      "stop eating",
+      "no food",
+    ],
+  },
+  {
     id: "seekFood",
     samples: [
       "find food",
@@ -667,6 +678,17 @@ function actionBias(action, weight) {
       const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
       bias[idx] = (nearest.distance - d) * weight * 0.4;
     });
+  } else if (action.type === "avoidFood") {
+    const nearest = getNearest(food);
+    if (!nearest) {
+      return null;
+    }
+    ACTIONS.forEach((move, idx) => {
+      const nx = ape.x + move.dx;
+      const ny = ape.y + move.dy;
+      const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
+      bias[idx] = (d - nearest.distance) * weight * 0.4;
+    });
   } else if (action.type === "seekFood") {
     const nearest = getNearest(food);
     if (!nearest) {
@@ -999,6 +1021,20 @@ function parseAction(text) {
   if (hasPredator && hasToward) {
     return { type: "seekPredator" };
   }
+  const hasFood = text.includes("food") || text.includes("eat") || text.includes("forage") || text.includes("berries") || text.includes("fruit");
+  const hasStopFood =
+    hasFood
+    && (
+      text.includes("stop")
+      || text.includes("avoid")
+      || text.includes("dont")
+      || text.includes("don't")
+      || text.includes("do not")
+      || text.includes("no food")
+    );
+  if (hasStopFood) {
+    return { type: "avoidFood" };
+  }
   const hasRock = text.includes("rock") || text.includes("rocks") || text.includes("stone") || text.includes("boulder");
   const hasNo =
     text.includes("avoid")
@@ -1010,7 +1046,7 @@ function parseAction(text) {
   if (hasRock && hasNo) {
     return { type: "avoidRocks" };
   }
-  if (text.includes("food") || text.includes("eat") || text.includes("forage") || text.includes("berries") || text.includes("fruit")) {
+  if (hasFood) {
     return { type: "seekFood" };
   }
   if (text.includes("tree") || text.includes("forest")) {
@@ -1061,6 +1097,7 @@ function describeAction(action) {
   }
   if (action.type === "avoidPredator") return "avoid predators";
   if (action.type === "seekPredator") return "approach predators";
+  if (action.type === "avoidFood") return "avoid food";
   if (action.type === "avoidRocks") return "avoid rocks";
   if (action.type === "seekFood") return "seek food";
   if (action.type === "seekTrees") return "stay near trees";
@@ -1101,13 +1138,40 @@ function formatRuleText(action, condition) {
 }
 
 function getActiveAdviceRules() {
+  const chosen = new Map();
   for (let i = adviceRules.length - 1; i >= 0; i -= 1) {
     const rule = adviceRules[i];
-    if (evaluateCondition(rule.condition)) {
-      return [rule];
+    if (!evaluateCondition(rule.condition)) {
+      continue;
+    }
+    const group = adviceGroup(rule.action);
+    if (!chosen.has(group)) {
+      chosen.set(group, rule);
     }
   }
-  return [];
+  return Array.from(chosen.values());
+}
+
+function adviceGroup(action) {
+  if (!action) {
+    return "misc";
+  }
+  if (action.type === "avoidPredator" || action.type === "seekPredator") {
+    return "predator";
+  }
+  if (action.type === "seekFood" || action.type === "avoidFood") {
+    return "food";
+  }
+  if (action.type === "seekTrees") {
+    return "trees";
+  }
+  if (action.type === "avoidRocks") {
+    return "rocks";
+  }
+  if (action.type === "direction" || action.type === "stay") {
+    return "movement";
+  }
+  return "misc";
 }
 
 function parseAdvice(message) {
