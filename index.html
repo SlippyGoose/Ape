@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ape Island AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Ape Island Simulation</p>
+          <h1>Help the learning ape survive.</h1>
+          <p class="lede">
+            An AI ape learns from rewards, adapts to predators, and listens to your advice.
+            Talk to it to guide its survival instincts.
+          </p>
+        </div>
+        <div class="stats" id="stats"></div>
+      </header>
+
+      <main class="layout">
+        <section class="stage">
+          <div class="canvas-shell">
+            <canvas id="game" width="250" height="200" aria-label="Ape Island"></canvas>
+            <div class="badge">250 x 200 pixels @ 60 fps</div>
+          </div>
+          <div class="legend">
+            <div><span class="swatch ape"></span>Ape</div>
+            <div><span class="swatch predator"></span>Predator</div>
+            <div><span class="swatch food"></span>Food</div>
+            <div><span class="swatch tree"></span>Tree</div>
+            <div><span class="swatch rock"></span>Rock</div>
+            <div><span class="swatch water"></span>Water</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="card">
+            <h2>Talk to the ape</h2>
+            <p class="hint">Try: "avoid predators", "find food", "go north", or "stay".</p>
+            <div class="chat-log" id="chat-log" aria-live="polite"></div>
+            <form id="chat-form" autocomplete="off">
+              <input
+                id="chat-input"
+                type="text"
+                placeholder="Give advice..."
+                aria-label="Give advice to the ape"
+              />
+              <button type="submit">Send</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>AI readout</h2>
+            <div class="readout" id="readout"></div>
+            <button id="reset">Reset Island</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>
