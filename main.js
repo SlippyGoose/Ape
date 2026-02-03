@@ -9,13 +9,14 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const resetButton = document.getElementById("reset");
 
-const GRID_W = 50;
-const GRID_H = 40;
+const GRID_W = 100;
+const GRID_H = 100;
 const CELL = 5;
-const MAX_FOOD = 12;
-const TREE_COUNT = 80;
-const ROCK_COUNT = 55;
-const PREDATOR_COUNT = 3;
+const MAX_FOOD = 45;
+const TREE_COUNT = 400;
+const ROCK_COUNT = 275;
+const PREDATOR_COUNT = 8;
+const APE_COUNT = 2;
 const LOGIC_RATE = 10; // updates per second
 
 const COLORS = {
@@ -25,7 +26,8 @@ const COLORS = {
   tree: "#2a9d4b",
   rock: "#9aa3ad",
   food: "#fcbf49",
-  ape: "#7b4d2d",
+  ape1: "#7b4d2d",
+  ape2: "#3d5a80",
   predator: "#d62828",
   outline: "#183049",
 };
@@ -43,6 +45,7 @@ const NET_HIDDEN = 16;
 const NET_OUTPUTS = ACTIONS.length;
 const NET_LR = 0.05;
 const NET_GAMMA = 0.9;
+const SAVE_VERSION = 3;
 
 const ADVICE_INTENTS = [
   {
@@ -163,9 +166,11 @@ let trees = new Set();
 let rocks = new Set();
 let food = [];
 let predators = [];
-let ape;
+let apes = [];
 let adviceRules = [];
+let peerAdviceRules = [];
 let adviceId = 1;
+let peerAdviceId = 1;
 let tick = 0;
 let adviceModel;
 
@@ -429,13 +434,13 @@ function isBlocked(x, y) {
   return trees.has(key(x, y)) || rocks.has(key(x, y));
 }
 
-function randomLandCell() {
+function randomLandCell(occupied) {
   let x = 0;
   let y = 0;
   do {
     x = randInt(GRID_W);
     y = randInt(GRID_H);
-  } while (!isLand(x, y) || trees.has(key(x, y)) || rocks.has(key(x, y)));
+  } while (!isLand(x, y) || trees.has(key(x, y)) || rocks.has(key(x, y)) || occupied?.has(key(x, y)));
   return { x, y };
 }
 
@@ -497,12 +502,16 @@ function hydrateNet(saved) {
   };
 }
 
-function createApe() {
-  const saved = loadSave();
-  const apeStart = randomLandCell();
+function createApe(index, saved, occupied) {
+  const apeStart = randomLandCell(occupied);
   const net = hydrateNet(saved?.net);
+  const name = `Ape ${index + 1}`;
+  const color = index === 0 ? COLORS.ape1 : COLORS.ape2;
 
   return {
+    id: index + 1,
+    name,
+    color,
     x: apeStart.x,
     y: apeStart.y,
     hunger: 100,
@@ -510,9 +519,11 @@ function createApe() {
     deaths: saved?.deaths ?? 0,
     age: saved?.age ?? 0,
     epsilon: saved?.epsilon ?? 0.3,
+    fearPredator: saved?.fearPredator ?? 0,
     net,
     lastFeatures: null,
     lastAction: null,
+    lastStep: null,
   };
 }
 
@@ -525,21 +536,32 @@ function resetWorld() {
   placeFeatures(ROCK_COUNT, rocks);
   seedFood();
   spawnPredators();
-  ape = createApe();
+  const saved = loadSave();
+  const occupied = new Set(predators.map((predator) => key(predator.x, predator.y)));
+  apes = Array.from({ length: APE_COUNT }, (_, idx) => {
+    const ape = createApe(idx, saved?.apes?.[idx], occupied);
+    occupied.add(key(ape.x, ape.y));
+    return ape;
+  });
   adviceRules = [];
+  peerAdviceRules = [];
   adviceId = 1;
+  peerAdviceId = 1;
   tick = 0;
-  addChatLine("Ape", "New island generated. I will keep learning.");
+  addChatLine("Ape 1", "New island generated. I will keep learning.");
+  if (apes[1]) {
+    addChatLine("Ape 2", "I am ready too. Let us survive together.");
+  }
 }
 
-function getNearest(list) {
+function getNearest(list, origin) {
   if (!list.length) {
     return null;
   }
   let nearest = list[0];
-  let nearestDist = dist(ape, nearest);
+  let nearestDist = dist(origin, nearest);
   for (let i = 1; i < list.length; i += 1) {
-    const d = dist(ape, list[i]);
+    const d = dist(origin, list[i]);
     if (d < nearestDist) {
       nearest = list[i];
       nearestDist = d;
@@ -548,12 +570,12 @@ function getNearest(list) {
   return { target: nearest, distance: nearestDist };
 }
 
-function getNearestSet(set) {
+function getNearestSet(set, origin) {
   let nearest = null;
   let best = Number.POSITIVE_INFINITY;
   for (const item of set) {
     const [x, y] = item.split(",").map(Number);
-    const d = Math.abs(ape.x - x) + Math.abs(ape.y - y);
+    const d = Math.abs(origin.x - x) + Math.abs(origin.y - y);
     if (d < best) {
       best = d;
       nearest = { x, y };
@@ -565,9 +587,9 @@ function getNearestSet(set) {
   return { target: nearest, distance: best };
 }
 
-function buildStateFeatures() {
-  const predatorInfo = getNearest(predators);
-  const foodInfo = getNearest(food);
+function buildStateFeatures(ape) {
+  const predatorInfo = getNearest(predators, ape);
+  const foodInfo = getNearest(food, ape);
   const predatorDist = predatorInfo ? predatorInfo.distance : 10;
   const foodDist = foodInfo ? foodInfo.distance : 10;
   const predatorNear = predatorInfo ? (predatorInfo.distance <= 3 ? 1 : 0) : 0;
@@ -582,10 +604,10 @@ function buildStateFeatures() {
   ];
 }
 
-function stateIndex() {
-  const predatorNear = getNearest(predators)?.distance <= 3;
+function stateIndex(ape) {
+  const predatorNear = getNearest(predators, ape)?.distance <= 3;
   const hungry = ape.hunger <= 40;
-  const foodNear = getNearest(food)?.distance <= 4;
+  const foodNear = getNearest(food, ape)?.distance <= 4;
   let idx = 0;
   if (predatorNear) idx += 1;
   if (hungry) idx += 2;
@@ -593,7 +615,7 @@ function stateIndex() {
   return idx;
 }
 
-function chooseAction(features) {
+function chooseAction(ape, features) {
   const qValues = predictQ(ape.net, features);
   const valid = ACTIONS.map((action) => {
     const nx = ape.x + action.dx;
@@ -605,9 +627,18 @@ function chooseAction(features) {
   });
 
   let scores = qValues.slice();
-  const adviceBias = buildAdviceBias();
-  if (adviceBias) {
-    scores = scores.map((score, idx) => score + adviceBias[idx]);
+  const userBias = buildAdviceBias(ape, adviceRules);
+  const peerBias = buildAdviceBias(ape, peerAdviceRules);
+  const fearBias = buildFearBias(ape);
+
+  if (userBias) {
+    scores = scores.map((score, idx) => score + userBias[idx]);
+  }
+  if (peerBias) {
+    scores = scores.map((score, idx) => score + peerBias[idx]);
+  }
+  if (fearBias) {
+    scores = scores.map((score, idx) => score + fearBias[idx]);
   }
 
   if (Math.random() < ape.epsilon) {
@@ -629,18 +660,18 @@ function chooseAction(features) {
   return bestIdx;
 }
 
-function buildAdviceBias() {
-  if (!adviceRules.length) {
+function buildAdviceBias(ape, rules) {
+  if (!rules.length) {
     return null;
   }
-  const activeRules = adviceRules.filter((rule) => evaluateCondition(rule.condition));
+  const activeRules = rules.filter((rule) => evaluateCondition(rule.condition, ape));
   if (!activeRules.length) {
     return null;
   }
   const bias = Array(ACTIONS.length).fill(0);
   const weight = 0.6 / activeRules.length;
   activeRules.forEach((rule) => {
-    const partial = actionBias(rule.action, weight);
+    const partial = actionBias(ape, rule.action, weight);
     if (!partial) {
       return;
     }
@@ -651,13 +682,35 @@ function buildAdviceBias() {
   return bias;
 }
 
-function actionBias(action, weight) {
+function buildFearBias(ape) {
+  if (!ape.fearPredator) {
+    return null;
+  }
+  const nearest = getNearest(predators, ape);
+  if (!nearest) {
+    return null;
+  }
+  if (nearest.distance > 8) {
+    return null;
+  }
+  const bias = Array(ACTIONS.length).fill(0);
+  const weight = 0.9 * ape.fearPredator;
+  ACTIONS.forEach((move, idx) => {
+    const nx = ape.x + move.dx;
+    const ny = ape.y + move.dy;
+    const d = Math.abs(nx - nearest.target.x) + Math.abs(ny - nearest.target.y);
+    bias[idx] = (d - nearest.distance) * weight;
+  });
+  return bias;
+}
+
+function actionBias(ape, action, weight) {
   const bias = Array(ACTIONS.length).fill(0);
   if (!action) {
     return null;
   }
   if (action.type === "avoidPredator") {
-    const nearest = getNearest(predators);
+    const nearest = getNearest(predators, ape);
     if (!nearest) {
       return null;
     }
@@ -668,7 +721,7 @@ function actionBias(action, weight) {
       bias[idx] = (d - nearest.distance) * weight * 0.5;
     });
   } else if (action.type === "seekPredator") {
-    const nearest = getNearest(predators);
+    const nearest = getNearest(predators, ape);
     if (!nearest) {
       return null;
     }
@@ -679,7 +732,7 @@ function actionBias(action, weight) {
       bias[idx] = (nearest.distance - d) * weight * 0.4;
     });
   } else if (action.type === "avoidFood") {
-    const nearest = getNearest(food);
+    const nearest = getNearest(food, ape);
     if (!nearest) {
       return null;
     }
@@ -690,7 +743,7 @@ function actionBias(action, weight) {
       bias[idx] = (d - nearest.distance) * weight * 0.4;
     });
   } else if (action.type === "seekFood") {
-    const nearest = getNearest(food);
+    const nearest = getNearest(food, ape);
     if (!nearest) {
       return null;
     }
@@ -709,7 +762,7 @@ function actionBias(action, weight) {
       }
     });
   } else if (action.type === "seekTrees") {
-    const nearest = getNearestSet(trees);
+    const nearest = getNearestSet(trees, ape);
     if (!nearest) {
       return null;
     }
@@ -720,7 +773,7 @@ function actionBias(action, weight) {
       bias[idx] = (nearest.distance - d) * weight * 0.35;
     });
   } else if (action.type === "avoidRocks") {
-    const nearest = getNearestSet(rocks);
+    const nearest = getNearestSet(rocks, ape);
     if (!nearest) {
       return null;
     }
@@ -737,7 +790,7 @@ function actionBias(action, weight) {
   return bias;
 }
 
-function evaluateCondition(condition) {
+function evaluateCondition(condition, ape) {
   if (!condition || condition.type === "always") {
     return true;
   }
@@ -748,24 +801,26 @@ function evaluateCondition(condition) {
     return ape.hunger < condition.value;
   }
   if (condition.type === "predatorNear") {
-    return getNearest(predators)?.distance <= 3;
+    return getNearest(predators, ape)?.distance <= 3;
   }
   if (condition.type === "foodNear") {
-    return getNearest(food)?.distance <= 4;
+    return getNearest(food, ape)?.distance <= 4;
   }
   return true;
 }
 
 function updatePredators() {
   predators.forEach((predator) => {
-    const targetDistance = dist(predator, ape);
+    const targetInfo = getNearest(apes, predator);
+    const target = targetInfo ? targetInfo.target : null;
+    const targetDistance = targetInfo ? targetInfo.distance : Number.POSITIVE_INFINITY;
     let dir = predator.dir;
 
-    if (targetDistance <= 8 && Math.random() < 0.8) {
+    if (target && targetDistance <= 8 && Math.random() < 0.8) {
       const options = ACTIONS.filter((action) => action.name !== "stay");
       options.sort((a, b) => {
-        const da = Math.abs(predator.x + a.dx - ape.x) + Math.abs(predator.y + a.dy - ape.y);
-        const db = Math.abs(predator.x + b.dx - ape.x) + Math.abs(predator.y + b.dy - ape.y);
+        const da = Math.abs(predator.x + a.dx - target.x) + Math.abs(predator.y + a.dy - target.y);
+        const db = Math.abs(predator.x + b.dx - target.x) + Math.abs(predator.y + b.dy - target.y);
         return da - db;
       });
       dir = options[0];
@@ -783,7 +838,7 @@ function updatePredators() {
   });
 }
 
-function applyAction(actionIdx) {
+function applyAction(ape, actionIdx) {
   const action = ACTIONS[actionIdx];
   const nx = ape.x + action.dx;
   const ny = ape.y + action.dy;
@@ -793,7 +848,7 @@ function applyAction(actionIdx) {
   }
 }
 
-function eatFood() {
+function eatFood(ape) {
   let ate = false;
   food = food.filter((item) => {
     if (item.x === ape.x && item.y === ape.y) {
@@ -809,61 +864,77 @@ function eatFood() {
   return ate;
 }
 
-function respawn(reason) {
-  const spawn = randomLandCell();
+function respawn(ape, reason) {
+  const occupied = new Set(apes.filter((other) => other !== ape).map((other) => key(other.x, other.y)));
+  const spawn = randomLandCell(occupied);
   ape.x = spawn.x;
   ape.y = spawn.y;
   ape.hunger = 100;
   ape.deaths += 1;
-  addChatLine("Ape", `I lost a life to ${reason}, but I will keep learning.`);
+  addChatLine(ape.name, `I lost a life to ${reason}, but I will keep learning.`);
 }
 
 function update() {
   tick += 1;
 
-  ape.hunger = clamp(ape.hunger - 0.8, 0, 100);
-  ape.age += 1;
+  apes.forEach((ape) => {
+    ape.hunger = clamp(ape.hunger - 0.8, 0, 100);
+    ape.age += 1;
+    ape.fearPredator = Math.max(0, ape.fearPredator - 0.0008);
 
-  const features = buildStateFeatures();
-  const actionIdx = chooseAction(features);
-  applyAction(actionIdx);
+    const features = buildStateFeatures(ape);
+    const actionIdx = chooseAction(ape, features);
+    applyAction(ape, actionIdx);
 
-  const ate = eatFood();
+    const ate = eatFood(ape);
+
+    ape.lastStep = { features, actionIdx, ate };
+  });
 
   updatePredators();
 
-  let reward = -0.02;
-  if (ate) {
-    reward += 1.2;
-  }
+  apes.forEach((ape) => {
+    const last = ape.lastStep;
+    if (!last) {
+      return;
+    }
 
-  let died = false;
-  const predatorHit = predators.some((predator) => predator.x === ape.x && predator.y === ape.y);
-  if (predatorHit) {
-    reward -= 2;
-    died = true;
-    respawn("a predator");
-  } else if (ape.hunger <= 0) {
-    reward -= 1.5;
-    died = true;
-    respawn("starvation");
-  }
+    let reward = -0.02;
+    if (last.ate) {
+      reward += 1.2;
+    }
 
-  const nextFeatures = buildStateFeatures();
-  const future = died ? 0 : Math.max(...predictQ(ape.net, nextFeatures));
-  const target = reward + NET_GAMMA * future;
-  trainNetwork(ape.net, features, actionIdx, target);
+    let died = false;
+    const predatorHit = predators.some((predator) => predator.x === ape.x && predator.y === ape.y);
+    if (predatorHit) {
+      reward -= 2;
+      died = true;
+      ape.fearPredator = clamp(ape.fearPredator + 0.7, 0, 1);
+      shareAdvice(ape, "predator");
+      respawn(ape, "a predator");
+    } else if (ape.hunger <= 0) {
+      reward -= 1.5;
+      died = true;
+      shareAdvice(ape, "starvation");
+      respawn(ape, "starvation");
+    }
 
-  ape.lastFeatures = features;
-  ape.lastAction = actionIdx;
+    const nextFeatures = buildStateFeatures(ape);
+    const future = died ? 0 : Math.max(...predictQ(ape.net, nextFeatures));
+    const target = reward + NET_GAMMA * future;
+    trainNetwork(ape.net, last.features, last.actionIdx, target);
 
-  if (!died && tick % 6 === 0) {
+    ape.lastFeatures = last.features;
+    ape.lastAction = last.actionIdx;
+    ape.epsilon = Math.max(0.05, ape.epsilon * 0.999);
+    ape.lastStep = null;
+  });
+
+  if (tick % 6 === 0) {
     if (food.length < MAX_FOOD && Math.random() < 0.45) {
       spawnFood();
     }
   }
-
-  ape.epsilon = Math.max(0.05, ape.epsilon * 0.999);
 
   if (tick % 30 === 0) {
     saveState();
@@ -897,47 +968,68 @@ function render() {
     ctx.fillRect(predator.x * CELL, predator.y * CELL, CELL, CELL);
   });
 
-  ctx.fillStyle = COLORS.ape;
-  ctx.fillRect(ape.x * CELL, ape.y * CELL, CELL, CELL);
+  apes.forEach((ape) => {
+    ctx.fillStyle = ape.color;
+    ctx.fillRect(ape.x * CELL, ape.y * CELL, CELL, CELL);
+  });
 }
 
 function drawHud() {
   statsEl.innerHTML = "";
-  const stats = [
-    { label: "Lives", value: "infinite" },
-    { label: "Deaths", value: ape.deaths },
-    { label: "Foods", value: ape.foods },
-    { label: "Hunger", value: `${Math.round(ape.hunger)}%` },
-    { label: "Epsilon", value: ape.epsilon.toFixed(2) },
-  ];
-
-  stats.forEach((stat) => {
+  apes.forEach((ape) => {
     const div = document.createElement("div");
     div.className = "stat";
-    div.innerHTML = `<strong>${stat.label}</strong>${stat.value}`;
+    div.innerHTML = `
+      <strong>${ape.name}</strong>
+      Deaths: ${ape.deaths}<br />
+      Foods: ${ape.foods}<br />
+      Hunger: ${Math.round(ape.hunger)}%<br />
+      Epsilon: ${ape.epsilon.toFixed(2)}<br />
+      Predator Fear: ${ape.fearPredator.toFixed(2)}
+    `;
     statsEl.appendChild(div);
   });
 
-  const predatorDist = getNearest(predators)?.distance ?? "?";
-  const foodDist = getNearest(food)?.distance ?? "?";
-  const activeRules = getActiveAdviceRules();
   const allAdviceText = adviceRules.length ? adviceRules.map((rule) => rule.text).join(" | ") : "none";
-  const activeAdviceText = activeRules.length ? activeRules.map((rule) => rule.text).join(" | ") : "none";
+  const allPeerAdviceText = peerAdviceRules.length
+    ? peerAdviceRules.map((rule) => `${rule.text} (${rule.source})`).join(" | ")
+    : "none";
+
+  const readoutBlocks = apes
+    .map((ape) => {
+      const predatorDist = getNearest(predators, ape)?.distance ?? "?";
+      const foodDist = getNearest(food, ape)?.distance ?? "?";
+      const activeUser = getActiveAdviceRules(adviceRules, ape);
+      const activePeer = getActiveAdviceRules(peerAdviceRules, ape);
+      const activeAdviceText = activeUser.length ? activeUser.map((rule) => rule.text).join(" | ") : "none";
+      const activePeerText = activePeer.length
+        ? activePeer.map((rule) => `${rule.text} (${rule.source})`).join(" | ")
+        : "none";
+      return `
+        <div class="readout-block">
+          <div><strong>${ape.name}</strong></div>
+          <div><strong>AI State:</strong> ${stateLabel(ape)}</div>
+          <div><strong>Nearest Predator:</strong> ${predatorDist} tiles</div>
+          <div><strong>Nearest Food:</strong> ${foodDist} tiles</div>
+          <div><strong>Active User Advice:</strong> ${activeAdviceText}</div>
+          <div><strong>Active Peer Advice:</strong> ${activePeerText}</div>
+        </div>
+      `;
+    })
+    .join("");
 
   readoutEl.innerHTML = `
-    <div><strong>Brain:</strong> Neural net policy</div>
-    <div><strong>AI State:</strong> ${stateLabel()}</div>
-    <div><strong>Nearest Predator:</strong> ${predatorDist} tiles</div>
-    <div><strong>Nearest Food:</strong> ${foodDist} tiles</div>
-    <div><strong>Advice Rules:</strong> ${allAdviceText}</div>
-    <div><strong>Active Now:</strong> ${activeAdviceText}</div>
+    <div><strong>Brain:</strong> Neural net policy per ape</div>
+    <div><strong>User Advice Rules:</strong> ${allAdviceText}</div>
+    <div><strong>Peer Advice Rules:</strong> ${allPeerAdviceText}</div>
+    ${readoutBlocks}
   `;
 }
 
-function stateLabel() {
-  const predatorNear = getNearest(predators)?.distance <= 3;
+function stateLabel(ape) {
+  const predatorNear = getNearest(predators, ape)?.distance <= 3;
   const hungry = ape.hunger <= 40;
-  const foodNear = getNearest(food)?.distance <= 4;
+  const foodNear = getNearest(food, ape)?.distance <= 4;
   const tags = [];
   if (predatorNear) tags.push("predator near");
   if (hungry) tags.push("hungry");
@@ -951,6 +1043,37 @@ function addChatLine(speaker, message) {
   line.innerHTML = `<span>${speaker}:</span> ${message}`;
   chatLog.appendChild(line);
   chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function addPeerAdvice(fromApe, action, condition) {
+  if (!action || !condition) {
+    return;
+  }
+  const text = formatRuleText(action, condition);
+  const last = peerAdviceRules[peerAdviceRules.length - 1];
+  if (last && last.text === text && last.source === fromApe.name) {
+    return;
+  }
+  const rule = {
+    id: peerAdviceId++,
+    action,
+    condition,
+    text,
+    source: fromApe.name,
+  };
+  peerAdviceRules.push(rule);
+  if (peerAdviceRules.length > 8) {
+    peerAdviceRules.shift();
+  }
+  addChatLine(fromApe.name, `Advice to others: ${text}.`);
+}
+
+function shareAdvice(ape, reason) {
+  if (reason === "predator") {
+    addPeerAdvice(ape, { type: "avoidPredator" }, { type: "predatorNear" });
+  } else if (reason === "starvation") {
+    addPeerAdvice(ape, { type: "seekFood" }, { type: "hunger", op: "<", value: 50 });
+  }
 }
 
 function splitAdviceText(text) {
@@ -1137,11 +1260,11 @@ function formatRuleText(action, condition) {
   return `${actionText} when ${conditionText}`;
 }
 
-function getActiveAdviceRules() {
+function getActiveAdviceRules(rules, ape) {
   const chosen = new Map();
-  for (let i = adviceRules.length - 1; i >= 0; i -= 1) {
-    const rule = adviceRules[i];
-    if (!evaluateCondition(rule.condition)) {
+  for (let i = rules.length - 1; i >= 0; i -= 1) {
+    const rule = rules[i];
+    if (!evaluateCondition(rule.condition, ape)) {
       continue;
     }
     const group = adviceGroup(rule.action);
@@ -1217,12 +1340,15 @@ function parseAdvice(message) {
 
 function saveState() {
   const payload = {
-    version: 2,
-    net: ape.net,
-    foods: ape.foods,
-    deaths: ape.deaths,
-    age: ape.age,
-    epsilon: ape.epsilon,
+    version: SAVE_VERSION,
+    apes: apes.map((ape) => ({
+      net: ape.net,
+      foods: ape.foods,
+      deaths: ape.deaths,
+      age: ape.age,
+      epsilon: ape.epsilon,
+      fearPredator: ape.fearPredator,
+    })),
   };
   try {
     localStorage.setItem("apeSave", JSON.stringify(payload));
@@ -1238,10 +1364,25 @@ function loadSave() {
       return null;
     }
     const parsed = JSON.parse(raw);
-    if (parsed.version !== 2) {
-      return null;
+    if (parsed.version === SAVE_VERSION && Array.isArray(parsed.apes)) {
+      return parsed;
     }
-    return parsed;
+    if (parsed.version === 2 && parsed.net) {
+      return {
+        version: SAVE_VERSION,
+        apes: [
+          {
+            net: parsed.net,
+            foods: parsed.foods ?? 0,
+            deaths: parsed.deaths ?? 0,
+            age: parsed.age ?? 0,
+            epsilon: parsed.epsilon ?? 0.3,
+            fearPredator: 0,
+          },
+        ],
+      };
+    }
+    return null;
   } catch (error) {
     return null;
   }
@@ -1276,12 +1417,12 @@ chatForm.addEventListener("submit", (event) => {
   const result = parseAdvice(text);
   if (result.kind === "clear") {
     adviceRules = [];
-    addChatLine("Ape", "Advice cleared. I will keep learning.");
+    addChatLine("Ape 1", "Advice cleared. I will keep learning.");
   } else if (result.kind === "add") {
     adviceRules.push(result.rule);
-    addChatLine("Ape", `Rule saved: ${result.rule.text}. I will keep it even if I lose a life.`);
+    addChatLine("Ape 1", `Rule saved: ${result.rule.text}. I will keep it even if I lose a life.`);
   } else {
-    addChatLine("Ape", "I did not understand. Try: \"get food when hunger is below 50%\".");
+    addChatLine("Ape 1", "I did not understand. Try: \"get food when hunger is below 50%\".");
   }
   chatInput.value = "";
 });

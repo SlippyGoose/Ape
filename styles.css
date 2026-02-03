@@ -104,8 +104,8 @@ body {
 }
 
 canvas {
-  width: 750px;
-  height: 600px;
+  width: 500px;
+  height: 500px;
   max-width: 100%;
   border-radius: 12px;
   background: #1b2a3a;
@@ -146,7 +146,8 @@ canvas {
   vertical-align: middle;
 }
 
-.swatch.ape { background: #7b4d2d; }
+.swatch.ape-1 { background: #7b4d2d; }
+.swatch.ape-2 { background: #3d5a80; }
 .swatch.predator { background: #d62828; }
 .swatch.food { background: #fcbf49; }
 .swatch.tree { background: #2a9d4b; }
@@ -234,6 +235,14 @@ button:hover {
   margin-bottom: 12px;
 }
 
+.readout-block {
+  padding: 8px 0;
+}
+
+.readout-block + .readout-block {
+  border-top: 1px dashed rgba(0, 0, 0, 0.12);
+}
+
 #reset {
   width: 100%;
   background: var(--accent-2);
@@ -253,6 +262,6 @@ button:hover {
   canvas {
     width: 100%;
     height: auto;
-    aspect-ratio: 5 / 4;
+    aspect-ratio: 1 / 1;
   }
 }
